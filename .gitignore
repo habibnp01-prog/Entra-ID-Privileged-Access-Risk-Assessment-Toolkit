@@ -32,3 +32,6 @@ node_modules/
 # Generated scenarios contain live tenant data
 scenarios/generated/*.json
 !scenarios/generated/.gitkeep
+
+# Dashboard (contains live tenant data)
+output/dashboard.html

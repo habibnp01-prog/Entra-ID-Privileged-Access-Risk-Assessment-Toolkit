@@ -21,7 +21,8 @@
       Remediate   - Apply a scenario (preview + confirmation required)    [Graph RW]
       Revalidate  - Diff baseline vs current                              [local]
       Audit       - Export CSV + HTML bundle                              [local]
-      Full        - Discover + Plan + Scenarios + Audit                   [Graph READ]
+      Dashboard   - Self-contained interactive HTML dashboard             [local]
+      Full        - Discover + Plan + Scenarios + Dashboard + Audit       [Graph READ]
 
 .PARAMETER Action
     One of the actions listed above.
@@ -56,6 +57,7 @@
 .EXAMPLE
     .\Invoke-EntraToolkit.ps1 -Action Status
     .\Invoke-EntraToolkit.ps1 -Action Discover
+    .\Invoke-EntraToolkit.ps1 -Action Dashboard
     .\Invoke-EntraToolkit.ps1 -Action Full -MinTier Medium
     .\Invoke-EntraToolkit.ps1 -Action Remediate -ScenarioPath <file> -Apply
 #>
@@ -63,7 +65,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Full")]
+    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Dashboard","Full")]
     [string]$Action,
 
     [string]$OutputFolder   = "",
@@ -97,6 +99,7 @@ $S_whatif     = Join-Path $repoRoot "scripts\RiskEngine\Invoke-WhatIfSimulation.
 $S_remediate  = Join-Path $repoRoot "scripts\Remediation\Invoke-EntraRemediation.ps1"
 $S_reval      = Join-Path $repoRoot "scripts\Remediation\Compare-EntraRemediationOutcome.ps1"
 $S_audit      = Join-Path $repoRoot "scripts\Remediation\Export-EntraAuditBundle.ps1"
+$S_dashboard  = Join-Path $repoRoot "scripts\Remediation\New-EntraDashboard.ps1"
 
 $F_score     = Join-Path $OutputFolder "RiskScoreReport.json"
 $F_scoreBase = Join-Path $OutputFolder "RiskScoreReport.baseline.json"
@@ -104,6 +107,7 @@ $F_pim       = Join-Path $OutputFolder "PIMEligibilityReport.json"
 $F_perm      = Join-Path $OutputFolder "PermanentRoleReport.json"
 $F_plan      = Join-Path $OutputFolder "RemediationPlan.md"
 $F_auditLog  = Join-Path $OutputFolder "RemediationAudit.log"
+$F_dashboard = Join-Path $OutputFolder "dashboard.html"
 
 # =========================================================
 # Helpers
@@ -171,38 +175,52 @@ function Ensure-Folders {
     }
 }
 
+function Install-ModuleCurrentUser {
+    param([string]$ModuleName)
+    Install-Module -Name $ModuleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+}
+
 function Ensure-Module {
     param(
         [string]$ModuleName,
         [string]$Reason = ""
     )
 
-    # Already loaded in this session?
-    if (Get-Module -Name $ModuleName) {
-        return $true
-    }
+    if (Get-Module -Name $ModuleName) { return $true }
 
-    # Installed but not loaded? Import it.
     if (Get-Module -ListAvailable -Name $ModuleName) {
         try {
             Import-Module $ModuleName -ErrorAction Stop -Force
             Write-Host "[*] Imported module: $ModuleName" -ForegroundColor DarkGray
             return $true
         } catch {
-            Write-Host "[X] Failed to import $ModuleName : $($_.Exception.Message)" -ForegroundColor Red
-            return $false
+            Write-Host "[!] $ModuleName is installed but failed to import." -ForegroundColor Yellow
+            Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkGray
+            Write-Host "    Attempting reinstall with -Scope CurrentUser..." -ForegroundColor Cyan
+            try {
+                Install-ModuleCurrentUser -ModuleName $ModuleName
+                Import-Module $ModuleName -ErrorAction Stop -Force
+                Write-Host "[OK] Reinstalled and imported $ModuleName" -ForegroundColor Green
+                return $true
+            } catch {
+                Write-Host "[X] Reinstall failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Fix "Manual repair required." @(
+                    "Uninstall-Module $ModuleName -AllVersions -Force",
+                    "Install-Module $ModuleName -Scope CurrentUser -Force"
+                )
+                return $false
+            }
         }
     }
 
-    # Not installed at all
     Write-Host ""
     Write-Host "[!] Required module not installed: $ModuleName" -ForegroundColor Yellow
     if ($Reason) { Write-Host "    Reason: $Reason" -ForegroundColor Gray }
 
     if ($AutoInstall) {
-        Write-Host "[*] Installing $ModuleName (AutoInstall)..." -ForegroundColor Cyan
+        Write-Host "[*] Installing $ModuleName (AutoInstall, CurrentUser scope)..." -ForegroundColor Cyan
         try {
-            Install-Module $ModuleName -Scope CurrentUser -Force -AllowClobber
+            Install-ModuleCurrentUser -ModuleName $ModuleName
             Import-Module $ModuleName -ErrorAction Stop -Force
             Write-Host "[OK] Installed and imported $ModuleName" -ForegroundColor Green
             return $true
@@ -220,14 +238,16 @@ function Ensure-Module {
         return $false
     }
 
-    if (Ask-YesNo "Install $ModuleName now?" $false) {
+    if (Ask-YesNo "Install $ModuleName now? (CurrentUser scope)" $false) {
         try {
-            Install-Module $ModuleName -Scope CurrentUser -Force -AllowClobber
+            Install-ModuleCurrentUser -ModuleName $ModuleName
             Import-Module $ModuleName -ErrorAction Stop -Force
             Write-Host "[OK] Installed and imported $ModuleName" -ForegroundColor Green
             return $true
         } catch {
             Write-Host "[X] Failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "    Try manually in an elevated PowerShell:" -ForegroundColor Yellow
+            Write-Host "      Install-Module $ModuleName -Scope CurrentUser -Force" -ForegroundColor Gray
             return $false
         }
     }
@@ -244,8 +264,6 @@ function Ensure-Graph {
         return $true
     }
 
-    # The umbrella Microsoft.Graph module has heavy dependencies that often
-    # fail to load. We only need these specific submodules for the toolkit.
     $requiredModules = @(
         "Microsoft.Graph.Authentication",
         "Microsoft.Graph.Identity.Governance",
@@ -303,6 +321,7 @@ function Invoke-ActionStatus {
         @{ Name = "PIM report";       Path = $F_pim       }
         @{ Name = "Permanent report"; Path = $F_perm      }
         @{ Name = "Remediation plan"; Path = $F_plan      }
+        @{ Name = "Dashboard";        Path = $F_dashboard }
         @{ Name = "Audit log";        Path = $F_auditLog  }
     )) {
         $exists = Test-Path $c.Path
@@ -392,7 +411,6 @@ function Invoke-ActionRemediate {
     $scenario = Get-Content $ScenarioPath -Raw | ConvertFrom-Json
     $changes  = @($scenario.Changes)
 
-    # ------------------- DRY RUN PATH -------------------
     if (-not $Apply) {
         Write-Header "REMEDIATION - DRY RUN"
         Write-Host "  Scenario : $($scenario.Name)"
@@ -413,7 +431,6 @@ function Invoke-ActionRemediate {
         return
     }
 
-    # ------------------- LIVE PATH with controlled destruction -------------------
     Write-Header "REMEDIATION - LIVE APPLY (CONTROLLED)"
 
     if (-not (Ensure-Graph)) { throw "Graph prerequisites not met." }
@@ -474,11 +491,23 @@ function Invoke-ActionAudit {
     & $S_audit -OutputFolder $OutputFolder -BundleRoot $OutputFolder
 }
 
+function Invoke-ActionDashboard {
+    Assert-Script $S_dashboard
+    if (-not (Test-Path $F_score)) {
+        Write-Fix "Risk score report missing at $F_score." @(
+            "Run: .\Invoke-EntraToolkit.ps1 -Action Discover"
+        )
+        throw "Cannot generate dashboard without a score report."
+    }
+    & $S_dashboard -OutputFolder $OutputFolder -ScenarioFolder $ScenarioFolder
+}
+
 function Invoke-ActionFull {
     Write-Header "FULL READ-ONLY PIPELINE"
     Invoke-ActionDiscover
     Invoke-ActionPlan
     Invoke-ActionScenarios
+    Invoke-ActionDashboard
     Invoke-ActionAudit
     Write-Host ""
     Write-Host "[OK] Full read-only pipeline complete." -ForegroundColor Green
@@ -504,6 +533,7 @@ try {
         "Remediate"  { Invoke-ActionRemediate }
         "Revalidate" { Invoke-ActionRevalidate }
         "Audit"      { Invoke-ActionAudit }
+        "Dashboard"  { Invoke-ActionDashboard }
         "Full"       { Invoke-ActionFull }
     }
 } catch {
