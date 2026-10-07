@@ -164,10 +164,10 @@ if ($dir -and -not (Test-Path $dir)) {
 $ranked | ConvertTo-Json -Depth 6 | Out-File $OutputPath -Encoding UTF8
 
 # --- Console summary ---
-$critCount = ($ranked | Where-Object { $_.Tier -eq "Critical" }).Count
-$highCount = ($ranked | Where-Object { $_.Tier -eq "High" }).Count
-$medCount  = ($ranked | Where-Object { $_.Tier -eq "Medium" }).Count
-$lowCount  = ($ranked | Where-Object { $_.Tier -eq "Low" }).Count
+$critCount = @($ranked | Where-Object { $_.Tier -eq "Critical" }).Count
+$highCount = @($ranked | Where-Object { $_.Tier -eq "High" }).Count
+$medCount  = @($ranked | Where-Object { $_.Tier -eq "Medium" }).Count
+$lowCount  = @($ranked | Where-Object { $_.Tier -eq "Low" }).Count
 
 Write-Host ""
 Write-Host "[OK] Risk score report saved to: $OutputPath" -ForegroundColor Green
