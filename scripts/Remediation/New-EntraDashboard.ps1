@@ -6,13 +6,13 @@
     Reads:
       - output/RiskScoreReport.json          (principal scores + findings)
       - output/RemediationAudit.log          (audit trail)
-      - output/ReValidationReport.md         (baseline diff, optional)
+      - output/history/history.jsonl         (snapshot history for trend)
       - scenarios/generated/*.json           (auto-scenarios)
 
     Produces:
       - output/dashboard.html                (self-contained, interactive)
 
-    No external dependencies. Pure HTML/CSS/JS.
+    No external dependencies. Pure HTML/CSS/JS with inline SVG charts.
 
 .PARAMETER OutputFolder
     Toolkit output folder. Defaults to ./output
@@ -42,7 +42,7 @@ if (-not $DashboardPath) { $DashboardPath = Join-Path $OutputFolder "dashboard.h
 # --- Validate inputs ---
 $scorePath = Join-Path $OutputFolder "RiskScoreReport.json"
 $auditPath = Join-Path $OutputFolder "RemediationAudit.log"
-$revalPath = Join-Path $OutputFolder "ReValidationReport.md"
+$historyPath = Join-Path $OutputFolder "history\history.jsonl"
 
 if (-not (Test-Path $scorePath)) {
     Write-Error "Score report not found at $scorePath. Run -Action Discover first."
@@ -84,6 +84,18 @@ if (Test-Path $auditPath) {
     }
 }
 
+# --- Load history for trend ---
+$history = @()
+if (Test-Path $historyPath) {
+    foreach ($line in Get-Content $historyPath) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $h = $line | ConvertFrom-Json
+            $history += $h
+        } catch { }
+    }
+}
+
 # --- Load scenarios ---
 $scenarios = @()
 if (Test-Path $ScenarioFolder) {
@@ -91,10 +103,10 @@ if (Test-Path $ScenarioFolder) {
         try {
             $s = Get-Content $f.FullName -Raw | ConvertFrom-Json
             $scenarios += [PSCustomObject]@{
-                File        = $f.Name
-                Name        = $s.Name
-                Changes     = @($s.Changes).Count
-                Generated   = $s.Generated
+                File      = $f.Name
+                Name      = $s.Name
+                Changes   = @($s.Changes).Count
+                Generated = $s.Generated
             }
         } catch { }
     }
@@ -117,6 +129,110 @@ function TierClass {
         default    { return "" }
     }
 }
+
+# --- Build SVG sparkline for aggregate score over time ---
+function New-TrendSvg {
+    param(
+        [array]$Points,      # array of PSCustomObject with .Timestamp and .AggregateScore
+        [int]$Width = 900,
+        [int]$Height = 220,
+        [int]$PaddingLeft = 50,
+        [int]$PaddingRight = 30,
+        [int]$PaddingTop = 20,
+        [int]$PaddingBottom = 40
+    )
+
+    if ($Points.Count -eq 0) {
+        return "<div style='color:#888;padding:20px 0'>No history yet. Run <code>-Action Snapshot</code> to record data points.</div>"
+    }
+
+    $innerW = $Width - $PaddingLeft - $PaddingRight
+    $innerH = $Height - $PaddingTop - $PaddingBottom
+
+    # Bounds
+    $scores = $Points | ForEach-Object { [int]$_.AggregateScore }
+    $minScore = ($scores | Measure-Object -Minimum).Minimum
+    $maxScore = ($scores | Measure-Object -Maximum).Maximum
+    if ($minScore -eq $maxScore) {
+        $minScore = [math]::Max(0, $minScore - 5)
+        $maxScore = $maxScore + 5
+    } else {
+        $pad = [math]::Max(1, [int](($maxScore - $minScore) * 0.1))
+        $minScore = [math]::Max(0, $minScore - $pad)
+        $maxScore = $maxScore + $pad
+    }
+
+    $n = $Points.Count
+    $stepX = if ($n -gt 1) { $innerW / ($n - 1) } else { 0 }
+
+    # Build polyline points
+    $coords = @()
+    for ($i = 0; $i -lt $n; $i++) {
+        $x = $PaddingLeft + ($i * $stepX)
+        $yRatio = ($Points[$i].AggregateScore - $minScore) / ($maxScore - $minScore)
+        $y = $PaddingTop + ($innerH - ($yRatio * $innerH))
+        $coords += [PSCustomObject]@{ X = $x; Y = $y; P = $Points[$i] }
+    }
+
+    $polylinePts = ($coords | ForEach-Object { "$([math]::Round($_.X,1)),$([math]::Round($_.Y,1))" }) -join " "
+
+    # Area under curve
+    $areaPts = "$PaddingLeft,$($PaddingTop + $innerH) " + $polylinePts + " $([math]::Round($coords[-1].X,1)),$($PaddingTop + $innerH)"
+
+    # Y-axis grid + labels (4 steps)
+    $gridLines = ""
+    for ($g = 0; $g -le 4; $g++) {
+        $frac = $g / 4
+        $y = $PaddingTop + ($innerH * $frac)
+        $val = [int]($maxScore - $frac * ($maxScore - $minScore))
+        $gridLines += "<line x1='$PaddingLeft' y1='$([math]::Round($y,1))' x2='$($PaddingLeft + $innerW)' y2='$([math]::Round($y,1))' stroke='#eee' stroke-width='1'/>"
+        $gridLines += "<text x='$($PaddingLeft - 8)' y='$([math]::Round($y + 4,1))' font-size='10' fill='#999' text-anchor='end'>$val</text>"
+    }
+
+    # Points (small circles)
+    $dots = ""
+    foreach ($c in $coords) {
+        $dots += "<circle cx='$([math]::Round($c.X,1))' cy='$([math]::Round($c.Y,1))' r='4' fill='#0078d4' stroke='white' stroke-width='2'/>"
+        # Tooltip
+        $label = HtmlEnc $c.P.Timestamp
+        $score = HtmlEnc $c.P.AggregateScore
+        $lbl = HtmlEnc $c.P.Label
+        $tipText = "$label&#10;Score: $score"
+        if ($lbl) { $tipText += "&#10;Label: $lbl" }
+        $dots += "<circle cx='$([math]::Round($c.X,1))' cy='$([math]::Round($c.Y,1))' r='10' fill='transparent'><title>$tipText</title></circle>"
+    }
+
+    # X-axis labels (first, middle, last only if too many)
+    $xLabels = ""
+    if ($n -le 6) {
+        foreach ($c in $coords) {
+            $ts = (HtmlEnc $c.P.Timestamp) -replace ':.*$',''  # strip seconds+ms
+            $xLabels += "<text x='$([math]::Round($c.X,1))' y='$($Height - 10)' font-size='10' fill='#999' text-anchor='middle'>$ts</text>"
+        }
+    } else {
+        $first = $coords[0]
+        $last = $coords[-1]
+        $firstTs = (HtmlEnc $first.P.Timestamp) -replace ':.*$',''
+        $lastTs  = (HtmlEnc $last.P.Timestamp)  -replace ':.*$',''
+        $xLabels += "<text x='$([math]::Round($first.X,1))' y='$($Height - 10)' font-size='10' fill='#999' text-anchor='start'>$firstTs</text>"
+        $xLabels += "<text x='$([math]::Round($last.X,1))' y='$($Height - 10)' font-size='10' fill='#999' text-anchor='end'>$lastTs</text>"
+    }
+
+    $svg = @"
+<svg viewBox="0 0 $Width $Height" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  $gridLines
+  <polygon points="$areaPts" fill="rgba(0,120,212,0.08)"/>
+  <polyline points="$polylinePts" fill="none" stroke="#0078d4" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  $dots
+  $xLabels
+</svg>
+"@
+    return $svg
+}
+
+# Build trend points from history (chronological)
+$trendPoints = @($history | Sort-Object Timestamp)
+$trendSvg = New-TrendSvg -Points $trendPoints
 
 # --- Build principal rows ---
 $principalRows = foreach ($p in ($scored | Sort-Object Score -Descending)) {
@@ -173,6 +289,7 @@ $scenarioRows = foreach ($s in $scenarios) {
 }
 
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+$snapshotCount = $history.Count
 
 # --- Compose HTML ---
 $html = @"
@@ -221,6 +338,13 @@ $html = @"
   .kpi.med  .value { color: #b8860b; }
   .kpi.low  .value { color: var(--low); }
 
+  .trend-card {
+    background: var(--card); border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    padding: 16px 20px; margin-top: 12px;
+  }
+  .trend-meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+
   table { width: 100%; border-collapse: collapse; background: var(--card);
           box-shadow: 0 1px 4px rgba(0,0,0,0.06); border-radius: 8px; overflow: hidden; margin-top: 12px; }
   th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); font-size: 13px; }
@@ -263,7 +387,7 @@ $html = @"
 
   @media print {
     body { background: white; }
-    .kpi, table, .principal-card { box-shadow: none; border: 1px solid #ddd; }
+    .kpi, table, .principal-card, .trend-card { box-shadow: none; border: 1px solid #ddd; }
     .chevron { display: none; }
     .principal-body { display: block !important; }
   }
@@ -284,6 +408,12 @@ $html = @"
   <div class="kpi"><div class="label">Aggregate score</div><div class="value">$aggregateScore</div></div>
   <div class="kpi"><div class="label">Total findings</div><div class="value">$totalFindings</div></div>
   <div class="kpi"><div class="label">Scenarios ready</div><div class="value">$($scenarios.Count)</div></div>
+</div>
+
+<h2>Aggregate Score Trend</h2>
+<div class="trend-card">
+  <div class="trend-meta">$snapshotCount snapshot(s) in history &middot; Hover a point for details &middot; Run <code>-Action Snapshot</code> after each Discover to build the chart</div>
+  $trendSvg
 </div>
 
 <h2>Principals by Risk</h2>
@@ -312,7 +442,6 @@ function toggleCard(el) {
   var card = el.parentElement;
   card.classList.toggle('expanded');
 }
-// Expand the top card by default
 document.addEventListener('DOMContentLoaded', function() {
   var first = document.querySelector('.principal-card');
   if (first) first.classList.add('expanded');
@@ -330,7 +459,9 @@ if ($dir -and -not (Test-Path $dir)) {
 }
 
 # --- Write file (UTF-8, no BOM) ---
-[System.IO.File]::WriteAllText((Resolve-Path -LiteralPath $dir).Path + "\" + (Split-Path $DashboardPath -Leaf), $html, (New-Object System.Text.UTF8Encoding $false))
+$resolvedDir = (Resolve-Path -LiteralPath $dir).Path
+$finalPath = Join-Path $resolvedDir (Split-Path $DashboardPath -Leaf)
+[System.IO.File]::WriteAllText($finalPath, $html, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host ""
 Write-Host "[OK] Dashboard saved to: $DashboardPath" -ForegroundColor Green
@@ -340,6 +471,7 @@ Write-Host "     High       : $($tierCounts.High)" -ForegroundColor DarkYellow
 Write-Host "     Medium     : $($tierCounts.Medium)" -ForegroundColor Yellow
 Write-Host "     Low        : $($tierCounts.Low)" -ForegroundColor Green
 Write-Host "[*]  Scenarios  : $($scenarios.Count)" -ForegroundColor Cyan
+Write-Host "[*]  Snapshots  : $snapshotCount" -ForegroundColor Cyan
 Write-Host "[*]  Audit rows : $($auditRows.Count)" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "[i] Open in browser: $DashboardPath" -ForegroundColor Gray
