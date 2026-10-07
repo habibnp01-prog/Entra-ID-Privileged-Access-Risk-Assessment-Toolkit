@@ -15,7 +15,8 @@
     .\Get-EntraPIMEligibilityReport.ps1
 
 .NOTES
-    Requires: Microsoft.Graph.Identity.Governance module
+    Requires: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.Governance,
+              Microsoft.Graph.Identity.DirectoryManagement
     Scopes:   RoleManagement.Read.Directory, Directory.Read.All
 #>
 
@@ -24,10 +25,22 @@ param(
     [string]$OutputPath = "./output/PIMEligibilityReport.json"
 )
 
-# --- Ensure Graph module is available ---
-if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.Governance)) {
-    Write-Error "Microsoft.Graph.Identity.Governance module not found. Run: Install-Module Microsoft.Graph -Scope CurrentUser -Force"
-    return
+# --- Ensure required Graph submodules are available (import if installed) ---
+$requiredModules = @(
+    "Microsoft.Graph.Authentication",
+    "Microsoft.Graph.Identity.Governance",
+    "Microsoft.Graph.Identity.DirectoryManagement"
+)
+
+foreach ($m in $requiredModules) {
+    if (-not (Get-Module -Name $m)) {
+        if (Get-Module -ListAvailable -Name $m) {
+            Import-Module $m -Force -ErrorAction Stop
+        } else {
+            Write-Error "Required module '$m' not installed. Run: Install-Module $m -Scope CurrentUser -Force"
+            return
+        }
+    }
 }
 
 # --- Ensure we're connected to Graph ---

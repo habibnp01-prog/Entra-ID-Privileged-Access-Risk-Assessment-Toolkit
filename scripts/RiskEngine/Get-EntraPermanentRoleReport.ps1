@@ -18,7 +18,8 @@
     .\Get-EntraPermanentRoleReport.ps1 -HighPrivilegeOnly
 
 .NOTES
-    Requires: Microsoft.Graph module
+    Requires: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.Governance,
+              Microsoft.Graph.Identity.DirectoryManagement
     Scopes:   RoleManagement.Read.Directory, Directory.Read.All
 #>
 
@@ -28,10 +29,22 @@ param(
     [switch]$HighPrivilegeOnly
 )
 
-# --- Ensure Graph module is available ---
-if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
-    Write-Error "Microsoft.Graph module not found. Run: Install-Module Microsoft.Graph -Scope CurrentUser -Force"
-    return
+# --- Ensure required Graph submodules are available (import if installed) ---
+$requiredModules = @(
+    "Microsoft.Graph.Authentication",
+    "Microsoft.Graph.Identity.Governance",
+    "Microsoft.Graph.Identity.DirectoryManagement"
+)
+
+foreach ($m in $requiredModules) {
+    if (-not (Get-Module -Name $m)) {
+        if (Get-Module -ListAvailable -Name $m) {
+            Import-Module $m -Force -ErrorAction Stop
+        } else {
+            Write-Error "Required module '$m' not installed. Run: Install-Module $m -Scope CurrentUser -Force"
+            return
+        }
+    }
 }
 
 # --- Ensure we're connected to Graph ---
@@ -143,7 +156,7 @@ $spCount   = @($findings | Where-Object { $_.PrincipalType -match "servicePrinci
 Write-Host ""
 Write-Host "[OK] Report saved to: $OutputPath" -ForegroundColor Green
 Write-Host "[*]  Total permanent assignments: $($findings.Count)" -ForegroundColor Cyan
-Write-Host "     Users:             $userCount" -ForegroundColor Gray
+Write-Host "     Users:              $userCount" -ForegroundColor Gray
 Write-Host "     Service principals: $spCount" -ForegroundColor Gray
 Write-Host "[!]  High-risk findings: $highCount" -ForegroundColor Red
 Write-Host "[!]  Medium-risk findings: $medCount" -ForegroundColor Yellow
