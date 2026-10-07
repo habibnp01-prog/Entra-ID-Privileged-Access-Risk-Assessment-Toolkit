@@ -3,20 +3,13 @@
     Applies remediation actions to Microsoft Entra ID with multi-layer safety guards.
 
 .DESCRIPTION
-    Reads a scenario file (same format as Invoke-WhatIfSimulation.ps1) and
-    applies the requested remediation actions to Entra ID.
-
-    SAFETY:
-      - DryRun is the DEFAULT. No changes are made unless -Apply is passed.
-      - Even with -Apply, -Confirm must be explicitly set to $true.
-      - Every action (real or simulated) is logged to the audit trail.
-      - A hard guard blocks removal of the LAST permanent Global Administrator.
-
-    Supported actions:
-      - ConvertPermanentToEligible : create eligible assignment, then remove permanent
-      - RemovePermanent            : remove permanent assignment without replacement
-      - RemoveEligible             : remove an existing PIM eligible assignment
-      - RemoveActive               : remove an existing PIM active assignment
+    Reads a scenario file and applies the requested remediation actions to
+    Entra ID with:
+      - DryRun default (no writes)
+      - Typed confirmation required for live
+      - Last-GA guard
+      - Full audit trail
+      - Explicit write-scope enforcement (auto-reconnect if missing)
 
 .PARAMETER ScenarioPath
     Path to the scenario JSON file. Required.
@@ -25,23 +18,17 @@
     Path to the audit log. Defaults to ./output/RemediationAudit.log
 
 .PARAMETER Apply
-    Actually perform changes against the tenant. Without this switch, the script
-    runs in DryRun mode and only reports what would happen.
+    Actually perform changes. Requires -Confirm.
 
 .PARAMETER Confirm
-    Must be set to $true IN ADDITION to -Apply. Prevents accidental execution.
+    Must be set to $true IN ADDITION to -Apply.
 
 .EXAMPLE
-    # DryRun (default) - shows what would change
     .\Invoke-EntraRemediation.ps1 -ScenarioPath .\scenarios\example-scenario.json
-
-    # Real execution - both switches required
     .\Invoke-EntraRemediation.ps1 -ScenarioPath .\scenarios\example-scenario.json -Apply -Confirm
 
 .NOTES
-    Requires: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.Governance,
-              Microsoft.Graph.Identity.DirectoryManagement
-    Scopes:   RoleManagement.ReadWrite.Directory, Directory.Read.All
+    Requires Microsoft.Graph submodules + RoleManagement.ReadWrite.Directory scope.
 #>
 
 [CmdletBinding()]
@@ -121,6 +108,7 @@ Write-Host ""
 # Ensure required Graph submodules are loaded (live mode only)
 # =========================================================
 if (-not $dryRun) {
+
     $requiredModules = @(
         "Microsoft.Graph.Authentication",
         "Microsoft.Graph.Identity.Governance",
@@ -138,10 +126,76 @@ if (-not $dryRun) {
         }
     }
 
-    if (-not (Get-MgContext)) {
-        Write-Host "[*] Connecting to Microsoft Graph..." -ForegroundColor Yellow
-        Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory","Directory.Read.All"
+    # ---- Enforce WRITE scope presence ----
+    $REQUIRED_WRITE_SCOPE = "RoleManagement.ReadWrite.Directory"
+
+    $ctx = Get-MgContext
+    $hasWrite = $false
+    if ($ctx -and $ctx.Scopes) {
+        foreach ($s in $ctx.Scopes) {
+            if ($s -ieq $REQUIRED_WRITE_SCOPE) { $hasWrite = $true; break }
+        }
     }
+
+    if (-not $hasWrite) {
+        Write-Host "[!] Current Graph session lacks '$REQUIRED_WRITE_SCOPE'." -ForegroundColor Yellow
+        Write-Host "    Current scopes: $($ctx.Scopes -join ', ')" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "[*] Reconnecting to Microsoft Graph with write scopes..." -ForegroundColor Cyan
+        Write-Host "    You will be prompted to consent to '$REQUIRED_WRITE_SCOPE'." -ForegroundColor Gray
+        Write-Host ""
+
+        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+
+        try {
+            Connect-MgGraph -Scopes @($REQUIRED_WRITE_SCOPE, "Directory.Read.All") -NoWelcome -ErrorAction Stop
+        } catch {
+            Write-Error "Graph reconnect failed: $($_.Exception.Message)"
+            return
+        }
+
+        $ctx = Get-MgContext
+        $hasWrite = $false
+        if ($ctx -and $ctx.Scopes) {
+            foreach ($s in $ctx.Scopes) {
+                if ($s -ieq $REQUIRED_WRITE_SCOPE) { $hasWrite = $true; break }
+            }
+        }
+
+        if (-not $hasWrite) {
+            Write-Host ""
+            Write-Host "[X] After reconnect, '$REQUIRED_WRITE_SCOPE' is STILL missing." -ForegroundColor Red
+            Write-Host "    New scopes: $($ctx.Scopes -join ', ')" -ForegroundColor DarkGray
+            Write-Host ""
+            Write-FixBlock @"
+Your tenant or account does not permit the write scope. Possible causes:
+  1. Your account is not a Privileged Role Administrator or Global Administrator.
+  2. Tenant admin consent is required for Microsoft Graph Command Line Tools.
+  3. Conditional Access is downgrading the token.
+
+Fixes:
+  - Sign in with an account that holds Privileged Role Administrator.
+  - Ask a tenant admin to grant admin consent for 'Microsoft Graph Command Line Tools'.
+  - Check Conditional Access policies targeting the Graph PowerShell app.
+"@
+            Write-Audit -Action "PRECHECK" -PrincipalId "" -RoleName "" `
+                        -Result "WRITE_SCOPE_MISSING" -Mode "LIVE" `
+                        -Detail "required=$REQUIRED_WRITE_SCOPE"
+            return
+        }
+    }
+
+    Write-Host "[OK] Graph write scope present ('$REQUIRED_WRITE_SCOPE')" -ForegroundColor Green
+}
+
+# =========================================================
+# FixBlock helper (used only for the write-scope failure path)
+# =========================================================
+function Write-FixBlock {
+    param([string]$Text)
+    Write-Host ""
+    Write-Host $Text -ForegroundColor Yellow
+    Write-Host ""
 }
 
 # =========================================================
@@ -238,7 +292,6 @@ foreach ($change in $scenario.Changes) {
     Write-Host ""
     Write-Host "[$processed/$($scenario.Changes.Count)] $($change.Action) - $($change.PrincipalId) / $($change.RoleName)" -ForegroundColor Cyan
 
-    # ---- Resolve role definition ID once per change (live mode) ----
     $roleDefId = $null
     if (-not $dryRun) {
         $roleDefId = Get-RoleDefinitionId -RoleName $change.RoleName
@@ -251,7 +304,6 @@ foreach ($change in $scenario.Changes) {
         }
     }
 
-    # ---- Last-GA safety check for any removal of Global Administrator ----
     if ($change.RoleName -eq "Global Administrator" -and -not $dryRun) {
         $isLast = Test-LastPermanentGlobalAdmin -PrincipalId $change.PrincipalId
         if ($isLast) {
@@ -272,7 +324,6 @@ foreach ($change in $scenario.Changes) {
                 Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                             -Result "SIMULATED" -Mode $mode
             } else {
-                # Create eligible
                 try {
                     $params = @{
                         Action           = "adminAssign"
@@ -285,19 +336,18 @@ foreach ($change in $scenario.Changes) {
                             Expiration    = @{ Type = "NoExpiration" }
                         }
                     }
-                    New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params | Out-Null
+                    New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params -ErrorAction Stop | Out-Null
                     Write-Host "    [OK] Eligible assignment created" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "ELIGIBLE_CREATED" -Mode $mode
                 } catch {
-                    Write-Warning "    Failed to create eligible: $($_.Exception.Message)"
+                    Write-Warning "    [FAILED] Could not create eligible: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "FAILED_ELIGIBLE_CREATE" -Mode $mode -Detail $_.Exception.Message
+                                -Result "FAILED_ELIGIBLE_CREATE" -Mode $mode -Detail ($_.Exception.Message -replace '\s+',' ')
                     $failed++
                     continue
                 }
 
-                # Remove permanent
                 try {
                     $assignmentId = Get-PermanentAssignmentId -PrincipalId $change.PrincipalId -RoleDefinitionId $roleDefId
                     if (-not $assignmentId) {
@@ -307,14 +357,14 @@ foreach ($change in $scenario.Changes) {
                         $skipped++
                         continue
                     }
-                    Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId
+                    Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId -ErrorAction Stop
                     Write-Host "    [OK] Permanent assignment removed" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "PERMANENT_REMOVED" -Mode $mode -Detail "assignmentId=$assignmentId"
                 } catch {
-                    Write-Warning "    Failed to remove permanent: $($_.Exception.Message)"
+                    Write-Warning "    [FAILED] Could not remove permanent: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "FAILED_PERMANENT_REMOVE" -Mode $mode -Detail $_.Exception.Message
+                                -Result "FAILED_PERMANENT_REMOVE" -Mode $mode -Detail ($_.Exception.Message -replace '\s+',' ')
                     $failed++
                 }
             }
@@ -335,14 +385,14 @@ foreach ($change in $scenario.Changes) {
                         $skipped++
                         continue
                     }
-                    Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId
+                    Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId -ErrorAction Stop
                     Write-Host "    [OK] Permanent assignment removed" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "PERMANENT_REMOVED" -Mode $mode -Detail "assignmentId=$assignmentId"
                 } catch {
-                    Write-Warning "    Failed: $($_.Exception.Message)"
+                    Write-Warning "    [FAILED] $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "FAILED" -Mode $mode -Detail $_.Exception.Message
+                                -Result "FAILED" -Mode $mode -Detail ($_.Exception.Message -replace '\s+',' ')
                     $failed++
                 }
             }
@@ -364,7 +414,6 @@ foreach ($change in $scenario.Changes) {
                         continue
                     }
 
-                    # Remove eligible via schedule request
                     $params = @{
                         Action           = "adminRemove"
                         Justification    = "Toolkit: remove eligible assignment"
@@ -372,14 +421,14 @@ foreach ($change in $scenario.Changes) {
                         DirectoryScopeId = "/"
                         PrincipalId      = $change.PrincipalId
                     }
-                    New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params | Out-Null
+                    New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params -ErrorAction Stop | Out-Null
                     Write-Host "    [OK] Eligible assignment removed" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "ELIGIBLE_REMOVED" -Mode $mode -Detail "eligibleId=$eligibleId"
                 } catch {
-                    Write-Warning "    Failed to remove eligible: $($_.Exception.Message)"
+                    Write-Warning "    [FAILED] Could not remove eligible: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "FAILED_ELIGIBLE_REMOVE" -Mode $mode -Detail $_.Exception.Message
+                                -Result "FAILED_ELIGIBLE_REMOVE" -Mode $mode -Detail ($_.Exception.Message -replace '\s+',' ')
                     $failed++
                 }
             }
@@ -401,7 +450,6 @@ foreach ($change in $scenario.Changes) {
                         continue
                     }
 
-                    # Deactivate the active assignment by creating a schedule request with adminRemove
                     $params = @{
                         Action           = "adminRemove"
                         Justification    = "Toolkit: deactivate active PIM assignment"
@@ -409,14 +457,14 @@ foreach ($change in $scenario.Changes) {
                         DirectoryScopeId = "/"
                         PrincipalId      = $change.PrincipalId
                     }
-                    New-MgRoleManagementDirectoryRoleAssignmentScheduleRequest -BodyParameter $params | Out-Null
+                    New-MgRoleManagementDirectoryRoleAssignmentScheduleRequest -BodyParameter $params -ErrorAction Stop | Out-Null
                     Write-Host "    [OK] Active PIM assignment deactivated" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "ACTIVE_REMOVED" -Mode $mode -Detail "activeId=$activeId"
                 } catch {
-                    Write-Warning "    Failed to remove active: $($_.Exception.Message)"
+                    Write-Warning "    [FAILED] Could not remove active: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "FAILED_ACTIVE_REMOVE" -Mode $mode -Detail $_.Exception.Message
+                                -Result "FAILED_ACTIVE_REMOVE" -Mode $mode -Detail ($_.Exception.Message -replace '\s+',' ')
                     $failed++
                 }
             }
@@ -446,5 +494,9 @@ Write-Host ""
 if ($dryRun) {
     Write-Host "  [DRY RUN] No changes were applied." -ForegroundColor Yellow
 } else {
-    Write-Host "  [LIVE] Changes have been applied. Audit log written." -ForegroundColor Red
+    if ($failed -eq 0) {
+        Write-Host "  [LIVE] Changes have been applied. Audit log written." -ForegroundColor Red
+    } else {
+        Write-Host "  [LIVE] Completed with $failed failure(s). See audit log for details." -ForegroundColor Red
+    }
 }
