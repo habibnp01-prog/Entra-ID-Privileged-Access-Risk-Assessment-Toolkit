@@ -13,17 +13,18 @@
         confirmation ("yes") unless -NonInteractive + -Force are set.
 
     ACTIONS:
-      Status       - Show toolkit state (no work)                          [local]
-      Discover     - Assessment (PIM + permanent + scoring)                [Graph READ]
-      Plan         - Markdown remediation plan                             [local]
-      Scenarios    - Auto-generate scenarios from risk report              [local]
-      WhatIf       - Simulate a scenario                                   [local]
-      Remediate    - Apply a scenario (preview + confirmation required)    [Graph RW]
-      Revalidate   - Diff baseline vs current                              [local]
-      Audit        - Export CSV + HTML bundle                              [local]
-      Dashboard    - Self-contained interactive HTML dashboard             [local]
-      Snapshot     - Save a timestamped score snapshot for trend history   [local]
-      Full         - Discover + Plan + Scenarios + Snapshot + Dashboard + Audit [Graph READ]
+      Status        - Show toolkit state (no work)                          [local]
+      Discover      - Assessment (PIM + permanent + scoring)                [Graph READ]
+      Plan          - Markdown remediation plan                             [local]
+      Scenarios     - Auto-generate scenarios from risk report              [local]
+      WhatIf        - Simulate a scenario                                   [local]
+      Remediate     - Apply a scenario (preview + confirmation required)    [Graph RW]
+      Revalidate    - Diff baseline vs current                              [local]
+      Audit         - Export CSV + HTML bundle                              [local]
+      Dashboard     - Self-contained interactive HTML dashboard             [local]
+      Snapshot      - Save a timestamped score snapshot for trend history   [local]
+      AccessReview  - Generate access review plan (Markdown + JSON)         [local]
+      Full          - Discover + Plan + Scenarios + Snapshot + AccessReview + Dashboard + Audit [Graph READ]
 
 .PARAMETER Action
     One of the actions listed above.
@@ -60,6 +61,7 @@
     .\Invoke-EntraToolkit.ps1 -Action Discover
     .\Invoke-EntraToolkit.ps1 -Action Dashboard
     .\Invoke-EntraToolkit.ps1 -Action Snapshot
+    .\Invoke-EntraToolkit.ps1 -Action AccessReview
     .\Invoke-EntraToolkit.ps1 -Action Full -MinTier Medium
     .\Invoke-EntraToolkit.ps1 -Action Remediate -ScenarioPath <file> -Apply
 #>
@@ -67,7 +69,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Dashboard","Snapshot","Full")]
+    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Dashboard","Snapshot","AccessReview","Full")]
     [string]$Action,
 
     [string]$OutputFolder   = "",
@@ -94,15 +96,16 @@ $repoRoot = $scriptRoot
 if (-not $OutputFolder)   { $OutputFolder   = Join-Path $repoRoot "output" }
 if (-not $ScenarioFolder) { $ScenarioFolder = Join-Path $repoRoot "scenarios\generated" }
 
-$S_assess     = Join-Path $repoRoot "scripts\Invoke-EntraRiskAssessment.ps1"
-$S_plan       = Join-Path $repoRoot "scripts\Remediation\New-EntraRemediationPlan.ps1"
-$S_scenarios  = Join-Path $repoRoot "scripts\Remediation\New-AutoRemediationScenarios.ps1"
-$S_whatif     = Join-Path $repoRoot "scripts\RiskEngine\Invoke-WhatIfSimulation.ps1"
-$S_remediate  = Join-Path $repoRoot "scripts\Remediation\Invoke-EntraRemediation.ps1"
-$S_reval      = Join-Path $repoRoot "scripts\Remediation\Compare-EntraRemediationOutcome.ps1"
-$S_audit      = Join-Path $repoRoot "scripts\Remediation\Export-EntraAuditBundle.ps1"
-$S_dashboard  = Join-Path $repoRoot "scripts\Remediation\New-EntraDashboard.ps1"
-$S_snapshot   = Join-Path $repoRoot "scripts\Remediation\Save-EntraScoreSnapshot.ps1"
+$S_assess       = Join-Path $repoRoot "scripts\Invoke-EntraRiskAssessment.ps1"
+$S_plan         = Join-Path $repoRoot "scripts\Remediation\New-EntraRemediationPlan.ps1"
+$S_scenarios    = Join-Path $repoRoot "scripts\Remediation\New-AutoRemediationScenarios.ps1"
+$S_whatif       = Join-Path $repoRoot "scripts\RiskEngine\Invoke-WhatIfSimulation.ps1"
+$S_remediate    = Join-Path $repoRoot "scripts\Remediation\Invoke-EntraRemediation.ps1"
+$S_reval        = Join-Path $repoRoot "scripts\Remediation\Compare-EntraRemediationOutcome.ps1"
+$S_audit        = Join-Path $repoRoot "scripts\Remediation\Export-EntraAuditBundle.ps1"
+$S_dashboard    = Join-Path $repoRoot "scripts\Remediation\New-EntraDashboard.ps1"
+$S_snapshot     = Join-Path $repoRoot "scripts\Remediation\Save-EntraScoreSnapshot.ps1"
+$S_accessReview = Join-Path $repoRoot "scripts\Remediation\New-EntraAccessReviewPlan.ps1"
 
 $F_score     = Join-Path $OutputFolder "RiskScoreReport.json"
 $F_scoreBase = Join-Path $OutputFolder "RiskScoreReport.baseline.json"
@@ -111,6 +114,8 @@ $F_perm      = Join-Path $OutputFolder "PermanentRoleReport.json"
 $F_plan      = Join-Path $OutputFolder "RemediationPlan.md"
 $F_auditLog  = Join-Path $OutputFolder "RemediationAudit.log"
 $F_dashboard = Join-Path $OutputFolder "dashboard.html"
+$F_reviewMd  = Join-Path $OutputFolder "AccessReviewPlan.md"
+$F_reviewJson= Join-Path $OutputFolder "AccessReviewPlan.json"
 
 # =========================================================
 # Helpers
@@ -319,13 +324,15 @@ function Invoke-ActionStatus {
 
     $rows = @()
     foreach ($c in @(
-        @{ Name = "Score report";     Path = $F_score     }
-        @{ Name = "Baseline report";  Path = $F_scoreBase }
-        @{ Name = "PIM report";       Path = $F_pim       }
-        @{ Name = "Permanent report"; Path = $F_perm      }
-        @{ Name = "Remediation plan"; Path = $F_plan      }
-        @{ Name = "Dashboard";        Path = $F_dashboard }
-        @{ Name = "Audit log";        Path = $F_auditLog  }
+        @{ Name = "Score report";         Path = $F_score      }
+        @{ Name = "Baseline report";      Path = $F_scoreBase  }
+        @{ Name = "PIM report";           Path = $F_pim        }
+        @{ Name = "Permanent report";     Path = $F_perm       }
+        @{ Name = "Remediation plan";     Path = $F_plan       }
+        @{ Name = "Dashboard";            Path = $F_dashboard  }
+        @{ Name = "Access review (MD)";   Path = $F_reviewMd   }
+        @{ Name = "Access review (JSON)"; Path = $F_reviewJson }
+        @{ Name = "Audit log";            Path = $F_auditLog   }
     )) {
         $exists = Test-Path $c.Path
         $rows += [PSCustomObject]@{
@@ -522,12 +529,24 @@ function Invoke-ActionSnapshot {
     & $S_snapshot -OutputFolder $OutputFolder
 }
 
+function Invoke-ActionAccessReview {
+    Assert-Script $S_accessReview
+    if (-not (Test-Path $F_score)) {
+        Write-Fix "Risk score report missing at $F_score." @(
+            "Run: .\Invoke-EntraToolkit.ps1 -Action Discover"
+        )
+        throw "Cannot generate access review plan without a score report."
+    }
+    & $S_accessReview -ScoreReportPath $F_score -OutputFolder $OutputFolder
+}
+
 function Invoke-ActionFull {
     Write-Header "FULL READ-ONLY PIPELINE"
     Invoke-ActionDiscover
     Invoke-ActionPlan
     Invoke-ActionScenarios
     Invoke-ActionSnapshot
+    Invoke-ActionAccessReview
     Invoke-ActionDashboard
     Invoke-ActionAudit
     Write-Host ""
@@ -546,17 +565,18 @@ $startedAt = Get-Date
 
 try {
     switch ($Action) {
-        "Status"     { Invoke-ActionStatus }
-        "Discover"   { Invoke-ActionDiscover }
-        "Plan"       { Invoke-ActionPlan }
-        "Scenarios"  { Invoke-ActionScenarios }
-        "WhatIf"     { Invoke-ActionWhatIf }
-        "Remediate"  { Invoke-ActionRemediate }
-        "Revalidate" { Invoke-ActionRevalidate }
-        "Audit"      { Invoke-ActionAudit }
-        "Dashboard"  { Invoke-ActionDashboard }
-        "Snapshot"   { Invoke-ActionSnapshot }
-        "Full"       { Invoke-ActionFull }
+        "Status"       { Invoke-ActionStatus }
+        "Discover"     { Invoke-ActionDiscover }
+        "Plan"         { Invoke-ActionPlan }
+        "Scenarios"    { Invoke-ActionScenarios }
+        "WhatIf"       { Invoke-ActionWhatIf }
+        "Remediate"    { Invoke-ActionRemediate }
+        "Revalidate"   { Invoke-ActionRevalidate }
+        "Audit"        { Invoke-ActionAudit }
+        "Dashboard"    { Invoke-ActionDashboard }
+        "Snapshot"     { Invoke-ActionSnapshot }
+        "AccessReview" { Invoke-ActionAccessReview }
+        "Full"         { Invoke-ActionFull }
     }
 } catch {
     Write-Host ""
