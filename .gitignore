@@ -28,3 +28,7 @@ desktop.ini
 
 # ---------- Node (if you add tooling later) ----------
 node_modules/
+
+# Generated scenarios contain live tenant data
+scenarios/generated/*.json
+!scenarios/generated/.gitkeep
