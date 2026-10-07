@@ -1,0 +1,30 @@
+# ---------- Output reports ----------
+output/*
+!output/.gitkeep
+
+# ---------- Secrets / credentials ----------
+*.env
+secrets.json
+client_secret.txt
+*.pfx
+*.pem
+
+# ---------- Logs / temp ----------
+*.log
+*.tmp
+*.temp
+
+# ---------- PowerShell ----------
+*.ps1xml
+!*.format.ps1xml
+
+# ---------- VS Code ----------
+.vscode/
+
+# ---------- OS files ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Node (if you add tooling later) ----------
+node_modules/
