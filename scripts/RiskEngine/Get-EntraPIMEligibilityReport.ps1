@@ -32,18 +32,18 @@ if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.Governance)) 
 
 # --- Ensure we're connected to Graph ---
 if (-not (Get-MgContext)) {
-    Write-Host "🔐 Not connected to Microsoft Graph. Connecting..." -ForegroundColor Yellow
+    Write-Host "[*] Not connected to Microsoft Graph. Connecting..." -ForegroundColor Yellow
     Connect-MgGraph -Scopes "RoleManagement.Read.Directory","Directory.Read.All"
 }
 
-Write-Host "🔍 Fetching PIM eligible assignments..." -ForegroundColor Cyan
+Write-Host "[*] Fetching PIM eligible assignments..." -ForegroundColor Cyan
 $eligible = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance -All -ExpandProperty '*' -ErrorAction SilentlyContinue
 
-Write-Host "🔍 Fetching PIM active assignments..." -ForegroundColor Cyan
+Write-Host "[*] Fetching PIM active assignments..." -ForegroundColor Cyan
 $active = Get-MgRoleManagementDirectoryRoleAssignmentScheduleInstance -All -ExpandProperty '*' -ErrorAction SilentlyContinue
 
-# --- Build lookup maps for role names and principal names ---
-Write-Host "🧩 Resolving role definitions..." -ForegroundColor Cyan
+# --- Build lookup maps for role names ---
+Write-Host "[*] Resolving role definitions..." -ForegroundColor Cyan
 $roleMap = @{}
 Get-MgRoleManagementDirectoryRoleDefinition -All | ForEach-Object {
     $roleMap[$_.Id] = $_.DisplayName
@@ -62,13 +62,11 @@ foreach ($a in $eligible) {
     $risk = "Low"
     $reason = "Standard eligible assignment"
 
-    # Flag: eligible for high-privilege role
     if ($roleName -match "Global Administrator|Privileged Role Administrator|Privileged Authentication Administrator") {
         $risk = "Medium"
         $reason = "Eligible for high-privilege role"
     }
 
-    # Flag: no expiration (permanent eligibility) - this is a governance gap
     if ($expirationType -eq "NoExpiration" -or $null -eq $endDate) {
         $risk = "Medium"
         $reason = "Eligible assignment with no expiration (permanent eligibility)"
@@ -98,7 +96,6 @@ foreach ($a in $active) {
     $risk = "Medium"
     $reason = "Active PIM assignment"
 
-    # Flag: active assignment with no expiration
     if ($expirationType -eq "NoExpiration" -or $null -eq $endDate) {
         $risk = "High"
         $reason = "Active PIM assignment with no expiration (permanent activation)"
@@ -128,15 +125,15 @@ if ($dir -and -not (Test-Path $dir)) {
 $findings | ConvertTo-Json -Depth 5 | Out-File $OutputPath -Encoding UTF8
 
 # --- Summary ---
-$eligibleCount = ($findings | Where-Object { $_.AssignmentType -eq "Eligible" }).Count
-$activeCount   = ($findings | Where-Object { $_.AssignmentType -eq "Active" }).Count
-$highRiskCount = ($findings | Where-Object { $_.Risk -eq "High" }).Count
-$noExpireCount = ($findings | Where-Object { $_.ExpirationType -eq "NoExpiration" -or $null -eq $_.EndDateTime }).Count
+$eligibleCount = @($findings | Where-Object { $_.AssignmentType -eq "Eligible" }).Count
+$activeCount   = @($findings | Where-Object { $_.AssignmentType -eq "Active" }).Count
+$highRiskCount = @($findings | Where-Object { $_.Risk -eq "High" }).Count
+$noExpireCount = @($findings | Where-Object { $_.ExpirationType -eq "NoExpiration" -or $null -eq $_.EndDateTime }).Count
 
 Write-Host ""
-Write-Host "✅ Report saved to: $OutputPath" -ForegroundColor Green
-Write-Host "📊 Total assignments: $($findings.Count)" -ForegroundColor Cyan
-Write-Host "   ├─ Eligible: $eligibleCount" -ForegroundColor Gray
-Write-Host "   └─ Active:   $activeCount" -ForegroundColor Gray
-Write-Host "🚨 High-risk findings: $highRiskCount" -ForegroundColor Red
-Write-Host "⚠️  No-expiration assignments: $noExpireCount" -ForegroundColor Yellow
+Write-Host "[OK] Report saved to: $OutputPath" -ForegroundColor Green
+Write-Host "[*]  Total assignments: $($findings.Count)" -ForegroundColor Cyan
+Write-Host "     Eligible: $eligibleCount" -ForegroundColor Gray
+Write-Host "     Active:   $activeCount" -ForegroundColor Gray
+Write-Host "[!]  High-risk findings: $highRiskCount" -ForegroundColor Red
+Write-Host "[!]  No-expiration assignments: $noExpireCount" -ForegroundColor Yellow

@@ -36,7 +36,7 @@ if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
 
 # --- Ensure we're connected to Graph ---
 if (-not (Get-MgContext)) {
-    Write-Host "🔐 Not connected to Microsoft Graph. Connecting..." -ForegroundColor Yellow
+    Write-Host "[*] Not connected to Microsoft Graph. Connecting..." -ForegroundColor Yellow
     Connect-MgGraph -Scopes "RoleManagement.Read.Directory","Directory.Read.All"
 }
 
@@ -57,7 +57,7 @@ $highPrivilegeRoles = @(
     "Password Administrator"
 )
 
-Write-Host "🔍 Fetching all directory role assignments..." -ForegroundColor Cyan
+Write-Host "[*] Fetching all directory role assignments..." -ForegroundColor Cyan
 
 # --- Build role name lookup map ---
 $roleMap = @{}
@@ -65,13 +65,12 @@ Get-MgRoleManagementDirectoryRoleDefinition -All | ForEach-Object {
     $roleMap[$_.Id] = $_.DisplayName
 }
 
-# --- Get ALL role assignments (permanent + PIM-created active ones) ---
+# --- Get ALL role assignments ---
 $assignments = Get-MgRoleManagementDirectoryRoleAssignment -All -ExpandProperty '*' -ErrorAction SilentlyContinue
 
 # --- Get PIM-created active assignments so we can exclude them ---
 $pimActive = Get-MgRoleManagementDirectoryRoleAssignmentScheduleInstance -All -ErrorAction SilentlyContinue
 
-# Build a lookup set of PIM-created assignment IDs
 $pimActiveIds = @{}
 foreach ($p in $pimActive) {
     if ($p.Id) { $pimActiveIds[$p.Id] = $true }
@@ -89,7 +88,6 @@ foreach ($a in $assignments) {
         $a.RoleDefinitionId
     }
 
-    # --- High privilege check ---
     $isHighPrivilege = $highPrivilegeRoles -contains $roleName
     if ($HighPrivilegeOnly -and -not $isHighPrivilege) { continue }
 
@@ -115,15 +113,15 @@ foreach ($a in $assignments) {
     }
 
     $findings += [PSCustomObject]@{
-        RoleName        = $roleName
-        RoleDefinitionId= $a.RoleDefinitionId
-        PrincipalId     = $a.PrincipalId
-        PrincipalName   = $principalName
-        PrincipalType   = $principalType
-        IsHighPrivilege = $isHighPrivilege
-        Risk            = $risk
-        Reason          = $reason
-        Discovered      = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        RoleName         = $roleName
+        RoleDefinitionId = $a.RoleDefinitionId
+        PrincipalId      = $a.PrincipalId
+        PrincipalName    = $principalName
+        PrincipalType    = $principalType
+        IsHighPrivilege  = $isHighPrivilege
+        Risk             = $risk
+        Reason           = $reason
+        Discovered       = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     }
 }
 
@@ -137,15 +135,15 @@ if ($dir -and -not (Test-Path $dir)) {
 $findings | ConvertTo-Json -Depth 5 | Out-File $OutputPath -Encoding UTF8
 
 # --- Summary ---
-$highCount   = ($findings | Where-Object { $_.Risk -eq "High" }).Count
-$medCount    = ($findings | Where-Object { $_.Risk -eq "Medium" }).Count
-$userCount   = ($findings | Where-Object { $_.PrincipalType -match "user" }).Count
-$spCount     = ($findings | Where-Object { $_.PrincipalType -match "servicePrincipal" }).Count
+$highCount = @($findings | Where-Object { $_.Risk -eq "High" }).Count
+$medCount  = @($findings | Where-Object { $_.Risk -eq "Medium" }).Count
+$userCount = @($findings | Where-Object { $_.PrincipalType -match "user" }).Count
+$spCount   = @($findings | Where-Object { $_.PrincipalType -match "servicePrincipal" }).Count
 
 Write-Host ""
-Write-Host "✅ Report saved to: $OutputPath" -ForegroundColor Green
-Write-Host "📊 Total permanent assignments: $($findings.Count)" -ForegroundColor Cyan
-Write-Host "   ├─ Users:             $userCount" -ForegroundColor Gray
-Write-Host "   └─ Service principals: $spCount" -ForegroundColor Gray
-Write-Host "🚨 High-risk findings: $highCount" -ForegroundColor Red
-Write-Host "⚠️  Medium-risk findings: $medCount" -ForegroundColor Yellow
+Write-Host "[OK] Report saved to: $OutputPath" -ForegroundColor Green
+Write-Host "[*]  Total permanent assignments: $($findings.Count)" -ForegroundColor Cyan
+Write-Host "     Users:             $userCount" -ForegroundColor Gray
+Write-Host "     Service principals: $spCount" -ForegroundColor Gray
+Write-Host "[!]  High-risk findings: $highCount" -ForegroundColor Red
+Write-Host "[!]  Medium-risk findings: $medCount" -ForegroundColor Yellow
