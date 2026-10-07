@@ -1,0 +1,11 @@
+{
+  "Name": "DEMO - Safe live remediation: remove one eligible assignment",
+  "Description": "Removes Mohammad Habib Khan's eligible (not active) assignment to Intune Administrator. No active access is interrupted. Only touches one eligible assignment.",
+  "Changes": [
+    {
+      "Action": "RemoveEligible",
+      "PrincipalId": "fc504e8b-daab-42d1-8c59-982e726959fd",
+      "RoleName": "Intune Administrator"
+    }
+  ]
+}
