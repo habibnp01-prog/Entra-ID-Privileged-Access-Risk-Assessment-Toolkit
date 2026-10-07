@@ -1,0 +1,21 @@
+{
+  "Name": "Example: Convert Alice's permanent Global Admin to PIM eligible",
+  "Description": "Simulates moving Alice Admin from a permanent Global Administrator assignment to a PIM eligible assignment.",
+  "Changes": [
+    {
+      "Action": "ConvertPermanentToEligible",
+      "PrincipalId": "aaaa-1111",
+      "RoleName": "Global Administrator"
+    },
+    {
+      "Action": "ConvertPermanentToEligible",
+      "PrincipalId": "aaaa-1111",
+      "RoleName": "Privileged Role Administrator"
+    },
+    {
+      "Action": "RemoveEligible",
+      "PrincipalId": "bbbb-2222",
+      "RoleName": "User Administrator"
+    }
+  ]
+}
