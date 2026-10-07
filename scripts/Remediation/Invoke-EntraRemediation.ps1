@@ -15,6 +15,8 @@
     Supported actions:
       - ConvertPermanentToEligible : create eligible assignment, then remove permanent
       - RemovePermanent            : remove permanent assignment without replacement
+      - RemoveEligible             : remove an existing PIM eligible assignment
+      - RemoveActive               : remove an existing PIM active assignment
 
 .PARAMETER ScenarioPath
     Path to the scenario JSON file. Required.
@@ -34,12 +36,12 @@
     .\Invoke-EntraRemediation.ps1 -ScenarioPath .\scenarios\example-scenario.json
 
     # Real execution - both switches required
-    .\Invoke-EntraRemediation.ps1 -ScenarioPath .\scenarios\example-scenario.json -Apply -Confirm:$true
+    .\Invoke-EntraRemediation.ps1 -ScenarioPath .\scenarios\example-scenario.json -Apply -Confirm
 
 .NOTES
-    Requires Microsoft.Graph module and a connected session with:
-      - RoleManagement.ReadWrite.Directory
-      - PrivilegedAccess.ReadWrite.AzureADGroup
+    Requires: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.Governance,
+              Microsoft.Graph.Identity.DirectoryManagement
+    Scopes:   RoleManagement.ReadWrite.Directory, Directory.Read.All
 #>
 
 [CmdletBinding()]
@@ -50,7 +52,6 @@ param(
     [string]$AuditLogPath = "./output/RemediationAudit.log",
 
     [switch]$Apply,
-
     [switch]$Confirm
 )
 
@@ -117,13 +118,26 @@ Write-Host "  AuditLog : $AuditLogPath"
 Write-Host ""
 
 # =========================================================
-# Graph connection (only required in live mode)
+# Ensure required Graph submodules are loaded (live mode only)
 # =========================================================
 if (-not $dryRun) {
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
-        Write-Error "Microsoft.Graph module not found. Install-Module Microsoft.Graph -Scope CurrentUser -Force"
-        return
+    $requiredModules = @(
+        "Microsoft.Graph.Authentication",
+        "Microsoft.Graph.Identity.Governance",
+        "Microsoft.Graph.Identity.DirectoryManagement"
+    )
+
+    foreach ($m in $requiredModules) {
+        if (-not (Get-Module -Name $m)) {
+            if (Get-Module -ListAvailable -Name $m) {
+                Import-Module $m -Force -ErrorAction Stop
+            } else {
+                Write-Error "Required module '$m' not installed. Run: Install-Module $m -Scope CurrentUser -Force"
+                return
+            }
+        }
     }
+
     if (-not (Get-MgContext)) {
         Write-Host "[*] Connecting to Microsoft Graph..." -ForegroundColor Yellow
         Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory","Directory.Read.All"
@@ -131,7 +145,7 @@ if (-not $dryRun) {
 }
 
 # =========================================================
-# Helper : lookup role definition ID by display name
+# Helpers
 # =========================================================
 function Get-RoleDefinitionId {
     param([string]$RoleName)
@@ -140,20 +154,15 @@ function Get-RoleDefinitionId {
     return $def.Id
 }
 
-# =========================================================
-# Helper : safety check - is this the last permanent Global Admin?
-# =========================================================
 function Test-LastPermanentGlobalAdmin {
     param([string]$PrincipalId)
 
     $gaDefId = Get-RoleDefinitionId -RoleName "Global Administrator"
     if (-not $gaDefId) { return $false }
 
-    # Get all permanent GA assignments (non-PIM)
     $allGa = Get-MgRoleManagementDirectoryRoleAssignment -Filter "roleDefinitionId eq '$gaDefId'" -All -ErrorAction SilentlyContinue
-
-    # Get PIM-active GA (to exclude)
     $pimActive = Get-MgRoleManagementDirectoryRoleAssignmentScheduleInstance -All -ErrorAction SilentlyContinue
+
     $pimActiveIds = @{}
     foreach ($p in $pimActive) { if ($p.Id) { $pimActiveIds[$p.Id] = $true } }
 
@@ -163,7 +172,6 @@ function Test-LastPermanentGlobalAdmin {
         $permanentGas += $a
     }
 
-    # If the target principal is among them and there's only one, block.
     $targetIsGa = $permanentGas | Where-Object { $_.PrincipalId -eq $PrincipalId }
     if ($targetIsGa -and $permanentGas.Count -le 1) {
         return $true
@@ -171,9 +179,6 @@ function Test-LastPermanentGlobalAdmin {
     return $false
 }
 
-# =========================================================
-# Helper : find a permanent assignment ID for a principal+role
-# =========================================================
 function Get-PermanentAssignmentId {
     param([string]$PrincipalId, [string]$RoleDefinitionId)
 
@@ -183,9 +188,37 @@ function Get-PermanentAssignmentId {
     foreach ($p in $pimActive) { if ($p.Id) { $pimActiveIds[$p.Id] = $true } }
 
     $match = $all | Where-Object {
-        $_.PrincipalId       -eq $PrincipalId -and
-        $_.RoleDefinitionId  -eq $RoleDefinitionId -and
+        $_.PrincipalId      -eq $PrincipalId -and
+        $_.RoleDefinitionId -eq $RoleDefinitionId -and
         -not $pimActiveIds.ContainsKey($_.Id)
+    } | Select-Object -First 1
+
+    if ($match) { return $match.Id }
+    return $null
+}
+
+function Get-EligibleAssignmentId {
+    param([string]$PrincipalId, [string]$RoleDefinitionId)
+
+    $all = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance -All -ErrorAction SilentlyContinue
+
+    $match = $all | Where-Object {
+        $_.PrincipalId      -eq $PrincipalId -and
+        $_.RoleDefinitionId -eq $RoleDefinitionId
+    } | Select-Object -First 1
+
+    if ($match) { return $match.Id }
+    return $null
+}
+
+function Get-ActiveAssignmentId {
+    param([string]$PrincipalId, [string]$RoleDefinitionId)
+
+    $all = Get-MgRoleManagementDirectoryRoleAssignmentScheduleInstance -All -ErrorAction SilentlyContinue
+
+    $match = $all | Where-Object {
+        $_.PrincipalId      -eq $PrincipalId -and
+        $_.RoleDefinitionId -eq $RoleDefinitionId
     } | Select-Object -First 1
 
     if ($match) { return $match.Id }
@@ -205,37 +238,42 @@ foreach ($change in $scenario.Changes) {
     Write-Host ""
     Write-Host "[$processed/$($scenario.Changes.Count)] $($change.Action) - $($change.PrincipalId) / $($change.RoleName)" -ForegroundColor Cyan
 
+    # ---- Resolve role definition ID once per change (live mode) ----
+    $roleDefId = $null
+    if (-not $dryRun) {
+        $roleDefId = Get-RoleDefinitionId -RoleName $change.RoleName
+        if (-not $roleDefId) {
+            Write-Warning "    Role definition '$($change.RoleName)' not found. Skipping."
+            Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                        -Result "ROLE_NOT_FOUND" -Mode $mode
+            $failed++
+            continue
+        }
+    }
+
+    # ---- Last-GA safety check for any removal of Global Administrator ----
+    if ($change.RoleName -eq "Global Administrator" -and -not $dryRun) {
+        $isLast = Test-LastPermanentGlobalAdmin -PrincipalId $change.PrincipalId
+        if ($isLast) {
+            Write-Warning "    BLOCKED: this would remove the last permanent Global Administrator. Skipping."
+            Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                        -Result "BLOCKED_LAST_GA" -Mode $mode -Detail "safety guard"
+            $skipped++
+            continue
+        }
+    }
+
     switch ($change.Action) {
 
         "ConvertPermanentToEligible" {
-            # Safety: last GA guard
-            if ($change.RoleName -eq "Global Administrator") {
-                $isLast = if ($dryRun) {
-                    Write-Host "    [dryrun] skipping last-GA safety check (live mode only)" -ForegroundColor DarkGray
-                    $false
-                } else {
-                    Test-LastPermanentGlobalAdmin -PrincipalId $change.PrincipalId
-                }
-                if ($isLast) {
-                    Write-Warning "    BLOCKED: this would remove the last permanent Global Administrator. Skipping."
-                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "BLOCKED_LAST_GA" -Mode $mode -Detail "safety guard"
-                    $skipped++
-                    continue
-                }
-            }
-
             if ($dryRun) {
-                Write-Host "    Would CREATE eligible PIM assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
-                Write-Host "    Would REMOVE permanent assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
+                Write-Host "    [dryrun] Would CREATE eligible PIM assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
+                Write-Host "    [dryrun] Would REMOVE permanent assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
                 Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                             -Result "SIMULATED" -Mode $mode
             } else {
-                # LIVE : create eligible PIM assignment
+                # Create eligible
                 try {
-                    $roleDefId = Get-RoleDefinitionId -RoleName $change.RoleName
-                    if (-not $roleDefId) { throw "Role definition '$($change.RoleName)' not found." }
-
                     $params = @{
                         Action           = "adminAssign"
                         Justification    = "Toolkit: convert permanent to eligible"
@@ -247,20 +285,19 @@ foreach ($change in $scenario.Changes) {
                             Expiration    = @{ Type = "NoExpiration" }
                         }
                     }
-
                     New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params | Out-Null
                     Write-Host "    [OK] Eligible assignment created" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "ELIGIBLE_CREATED" -Mode $mode
                 } catch {
-                    Write-Warning "    Failed to create eligible assignment: $($_.Exception.Message)"
+                    Write-Warning "    Failed to create eligible: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "FAILED_ELIGIBLE_CREATE" -Mode $mode -Detail $_.Exception.Message
                     $failed++
                     continue
                 }
 
-                # LIVE : remove permanent assignment
+                # Remove permanent
                 try {
                     $assignmentId = Get-PermanentAssignmentId -PrincipalId $change.PrincipalId -RoleDefinitionId $roleDefId
                     if (-not $assignmentId) {
@@ -270,13 +307,12 @@ foreach ($change in $scenario.Changes) {
                         $skipped++
                         continue
                     }
-
                     Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId
-                    Write-Host "    [OK] Permanent assignment removed ($assignmentId)" -ForegroundColor Green
+                    Write-Host "    [OK] Permanent assignment removed" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "PERMANENT_REMOVED" -Mode $mode -Detail "assignmentId=$assignmentId"
                 } catch {
-                    Write-Warning "    Failed to remove permanent assignment: $($_.Exception.Message)"
+                    Write-Warning "    Failed to remove permanent: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "FAILED_PERMANENT_REMOVE" -Mode $mode -Detail $_.Exception.Message
                     $failed++
@@ -285,29 +321,12 @@ foreach ($change in $scenario.Changes) {
         }
 
         "RemovePermanent" {
-            # Same last-GA safety check
-            if ($change.RoleName -eq "Global Administrator") {
-                $isLast = if ($dryRun) { $false } else {
-                    Test-LastPermanentGlobalAdmin -PrincipalId $change.PrincipalId
-                }
-                if ($isLast) {
-                    Write-Warning "    BLOCKED: this would remove the last permanent Global Administrator. Skipping."
-                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
-                                -Result "BLOCKED_LAST_GA" -Mode $mode -Detail "safety guard"
-                    $skipped++
-                    continue
-                }
-            }
-
             if ($dryRun) {
-                Write-Host "    Would REMOVE permanent assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
+                Write-Host "    [dryrun] Would REMOVE permanent assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
                 Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                             -Result "SIMULATED" -Mode $mode
             } else {
                 try {
-                    $roleDefId = Get-RoleDefinitionId -RoleName $change.RoleName
-                    if (-not $roleDefId) { throw "Role definition '$($change.RoleName)' not found." }
-
                     $assignmentId = Get-PermanentAssignmentId -PrincipalId $change.PrincipalId -RoleDefinitionId $roleDefId
                     if (-not $assignmentId) {
                         Write-Host "    [SKIP] No permanent assignment found" -ForegroundColor DarkYellow
@@ -316,15 +335,88 @@ foreach ($change in $scenario.Changes) {
                         $skipped++
                         continue
                     }
-
                     Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $assignmentId
-                    Write-Host "    [OK] Permanent assignment removed ($assignmentId)" -ForegroundColor Green
+                    Write-Host "    [OK] Permanent assignment removed" -ForegroundColor Green
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "PERMANENT_REMOVED" -Mode $mode -Detail "assignmentId=$assignmentId"
                 } catch {
                     Write-Warning "    Failed: $($_.Exception.Message)"
                     Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
                                 -Result "FAILED" -Mode $mode -Detail $_.Exception.Message
+                    $failed++
+                }
+            }
+        }
+
+        "RemoveEligible" {
+            if ($dryRun) {
+                Write-Host "    [dryrun] Would REMOVE eligible assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
+                Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                            -Result "SIMULATED" -Mode $mode
+            } else {
+                try {
+                    $eligibleId = Get-EligibleAssignmentId -PrincipalId $change.PrincipalId -RoleDefinitionId $roleDefId
+                    if (-not $eligibleId) {
+                        Write-Host "    [SKIP] No eligible assignment found" -ForegroundColor DarkYellow
+                        Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                    -Result "NO_ELIGIBLE_FOUND" -Mode $mode
+                        $skipped++
+                        continue
+                    }
+
+                    # Remove eligible via schedule request
+                    $params = @{
+                        Action           = "adminRemove"
+                        Justification    = "Toolkit: remove eligible assignment"
+                        RoleDefinitionId = $roleDefId
+                        DirectoryScopeId = "/"
+                        PrincipalId      = $change.PrincipalId
+                    }
+                    New-MgRoleManagementDirectoryRoleEligibilityScheduleRequest -BodyParameter $params | Out-Null
+                    Write-Host "    [OK] Eligible assignment removed" -ForegroundColor Green
+                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                -Result "ELIGIBLE_REMOVED" -Mode $mode -Detail "eligibleId=$eligibleId"
+                } catch {
+                    Write-Warning "    Failed to remove eligible: $($_.Exception.Message)"
+                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                -Result "FAILED_ELIGIBLE_REMOVE" -Mode $mode -Detail $_.Exception.Message
+                    $failed++
+                }
+            }
+        }
+
+        "RemoveActive" {
+            if ($dryRun) {
+                Write-Host "    [dryrun] Would REMOVE active PIM assignment for $($change.PrincipalId) on $($change.RoleName)" -ForegroundColor Yellow
+                Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                            -Result "SIMULATED" -Mode $mode
+            } else {
+                try {
+                    $activeId = Get-ActiveAssignmentId -PrincipalId $change.PrincipalId -RoleDefinitionId $roleDefId
+                    if (-not $activeId) {
+                        Write-Host "    [SKIP] No active assignment found" -ForegroundColor DarkYellow
+                        Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                    -Result "NO_ACTIVE_FOUND" -Mode $mode
+                        $skipped++
+                        continue
+                    }
+
+                    # Deactivate the active assignment by creating a schedule request with adminRemove
+                    $params = @{
+                        Action           = "adminRemove"
+                        Justification    = "Toolkit: deactivate active PIM assignment"
+                        RoleDefinitionId = $roleDefId
+                        DirectoryScopeId = "/"
+                        PrincipalId      = $change.PrincipalId
+                    }
+                    New-MgRoleManagementDirectoryRoleAssignmentScheduleRequest -BodyParameter $params | Out-Null
+                    Write-Host "    [OK] Active PIM assignment deactivated" -ForegroundColor Green
+                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                -Result "ACTIVE_REMOVED" -Mode $mode -Detail "activeId=$activeId"
+                } catch {
+                    Write-Warning "    Failed to remove active: $($_.Exception.Message)"
+                    Write-Audit -Action $change.Action -PrincipalId $change.PrincipalId -RoleName $change.RoleName `
+                                -Result "FAILED_ACTIVE_REMOVE" -Mode $mode -Detail $_.Exception.Message
                     $failed++
                 }
             }
@@ -352,7 +444,7 @@ Write-Host "  Failed    : $failed"
 Write-Host "  Audit log : $AuditLogPath"
 Write-Host ""
 if ($dryRun) {
-    Write-Host "  [DRY RUN] No changes were applied. Re-run with -Apply -Confirm:`$true to execute." -ForegroundColor Yellow
+    Write-Host "  [DRY RUN] No changes were applied." -ForegroundColor Yellow
 } else {
     Write-Host "  [LIVE] Changes have been applied. Audit log written." -ForegroundColor Red
 }
