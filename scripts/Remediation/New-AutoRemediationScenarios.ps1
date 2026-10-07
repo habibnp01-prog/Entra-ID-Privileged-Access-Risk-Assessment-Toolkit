@@ -107,7 +107,7 @@ $written = 0
 foreach ($p in $targets) {
     $changes = New-ChangesFromFindings -Principal $p
 
-    if ($changes.Count -eq 0) {
+    if (@($changes).Count -eq 0) {
         Write-Host "    [SKIP] $($p.PrincipalName) - no actionable findings" -ForegroundColor DarkYellow
         continue
     }
@@ -126,8 +126,9 @@ foreach ($p in $targets) {
         Changes     = $changes
     }
 
+    $changeCount = @($changes).Count
     $scenario | ConvertTo-Json -Depth 6 | Out-File $filePath -Encoding UTF8
-    Write-Host "    [OK] $fileName  ($($changes.Count) change(s))" -ForegroundColor Green
+    Write-Host "    [OK] $fileName  ($changeCount change(s))" -ForegroundColor Green
     $written++
 }
 

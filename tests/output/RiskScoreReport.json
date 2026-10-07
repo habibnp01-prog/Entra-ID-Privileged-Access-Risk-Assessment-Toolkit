@@ -1,0 +1,40 @@
+﻿[
+    {
+        "PrincipalId":  "11111111-1111-1111-1111-111111111111",
+        "PrincipalName":  "Test Active GA",
+        "Score":  70,
+        "Findings":  [
+                         {
+                             "Source":  "PermanentRole",
+                             "Role":  "Global Administrator",
+                             "Weight":  50,
+                             "Reason":  "Permanent assignment to high-privilege role (bypasses PIM)"
+                         },
+                         {
+                             "Source":  "PIM",
+                             "Role":  "Global Administrator",
+                             "Weight":  20,
+                             "Reason":  "Active - Active PIM assignment with no expiration"
+                         }
+                     ],
+        "HighPrivRoleCount":  2,
+        "Tier":  "High",
+        "FindingCount":  2
+    },
+    {
+        "PrincipalId":  "22222222-2222-2222-2222-222222222222",
+        "PrincipalName":  "Test Eligible UserAdmin",
+        "Score":  10,
+        "Findings":  [
+                         {
+                             "Source":  "PIM",
+                             "Role":  "User Administrator",
+                             "Weight":  10,
+                             "Reason":  "Eligible - Eligible assignment with no expiration"
+                         }
+                     ],
+        "HighPrivRoleCount":  1,
+        "Tier":  "Low",
+        "FindingCount":  1
+    }
+]

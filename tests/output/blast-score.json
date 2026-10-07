@@ -1,0 +1,28 @@
+﻿{
+    "PrincipalId":  "33333333-3333-3333-3333-333333333333",
+    "PrincipalName":  "Blast",
+    "Score":  100,
+    "Findings":  [
+                     {
+                         "Source":  "PermanentRole",
+                         "Role":  "Global Administrator",
+                         "Weight":  50,
+                         "Reason":  "Permanent"
+                     },
+                     {
+                         "Source":  "PermanentRole",
+                         "Role":  "Privileged Role Administrator",
+                         "Weight":  50,
+                         "Reason":  "Permanent"
+                     },
+                     {
+                         "Source":  "PermanentRole",
+                         "Role":  "Privileged Authentication Administrator",
+                         "Weight":  50,
+                         "Reason":  "Permanent"
+                     }
+                 ],
+    "HighPrivRoleCount":  3,
+    "Tier":  "Critical",
+    "FindingCount":  3
+}

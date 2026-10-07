@@ -1,0 +1,59 @@
+﻿[
+    {
+        "PrincipalId":  "aaaa-1111",
+        "PrincipalName":  "Alice Admin",
+        "Score":  100,
+        "Tier":  "Critical",
+        "HighPrivRoleCount":  3,
+        "Findings":  [
+                         {
+                             "Source":  "PermanentRole",
+                             "Role":  "Global Administrator",
+                             "Weight":  50,
+                             "Reason":  "Permanent high-priv"
+                         },
+                         {
+                             "Source":  "PermanentRole",
+                             "Role":  "Privileged Role Administrator",
+                             "Weight":  50,
+                             "Reason":  "Permanent high-priv"
+                         },
+                         {
+                             "Source":  "PIM",
+                             "Role":  "Global Administrator",
+                             "Weight":  20,
+                             "Reason":  "Active - permanent activation"
+                         }
+                     ]
+    },
+    {
+        "PrincipalId":  "bbbb-2222",
+        "PrincipalName":  "Bob Operator",
+        "Score":  30,
+        "Tier":  "Medium",
+        "HighPrivRoleCount":  1,
+        "Findings":  [
+                         {
+                             "Source":  "PIM",
+                             "Role":  "User Administrator",
+                             "Weight":  10,
+                             "Reason":  "Eligible - Standard eligible assignment"
+                         }
+                     ]
+    },
+    {
+        "PrincipalId":  "cccc-3333",
+        "PrincipalName":  "Carol Low",
+        "Score":  5,
+        "Tier":  "Low",
+        "HighPrivRoleCount":  0,
+        "Findings":  [
+                         {
+                             "Source":  "PIM",
+                             "Role":  "Reports Reader",
+                             "Weight":  2,
+                             "Reason":  "Eligible - Standard"
+                         }
+                     ]
+    }
+]

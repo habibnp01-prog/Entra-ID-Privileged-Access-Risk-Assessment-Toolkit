@@ -1,0 +1,10 @@
+﻿{
+    "PrincipalId":  "zzz-9999",
+    "PrincipalName":  "Zero Risk",
+    "Score":  2,
+    "Tier":  "Low",
+    "HighPrivRoleCount":  0,
+    "Findings":  [
+
+                 ]
+}

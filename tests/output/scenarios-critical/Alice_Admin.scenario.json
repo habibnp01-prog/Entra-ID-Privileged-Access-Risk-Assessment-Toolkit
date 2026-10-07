@@ -1,0 +1,23 @@
+﻿{
+    "Name":  "Auto-generated remediation for Alice Admin (Critical, score 100)",
+    "Description":  "Derived from RiskScoreReport. Targets all actionable findings for this principal.",
+    "Generated":  "2026-10-07 14:50:07",
+    "Source":  "D:\\Project\\Entra-ID-Privileged-Access-Risk-Assessment-Toolkit\\tests\\output\\scenario-fixture-score.json",
+    "Changes":  [
+                    {
+                        "Action":  "ConvertPermanentToEligible",
+                        "PrincipalId":  "aaaa-1111",
+                        "RoleName":  "Global Administrator"
+                    },
+                    {
+                        "Action":  "ConvertPermanentToEligible",
+                        "PrincipalId":  "aaaa-1111",
+                        "RoleName":  "Privileged Role Administrator"
+                    },
+                    {
+                        "Action":  "ConvertPermanentToEligible",
+                        "PrincipalId":  "aaaa-1111",
+                        "RoleName":  "Global Administrator"
+                    }
+                ]
+}

@@ -1,0 +1,23 @@
+﻿[
+    {
+        "PrincipalId":  "33333333-3333-3333-3333-333333333333",
+        "PrincipalName":  "Blast",
+        "Source":  "PermanentRole",
+        "RoleName":  "Global Administrator",
+        "Reason":  "Permanent"
+    },
+    {
+        "PrincipalId":  "33333333-3333-3333-3333-333333333333",
+        "PrincipalName":  "Blast",
+        "Source":  "PermanentRole",
+        "RoleName":  "Privileged Role Administrator",
+        "Reason":  "Permanent"
+    },
+    {
+        "PrincipalId":  "33333333-3333-3333-3333-333333333333",
+        "PrincipalName":  "Blast",
+        "Source":  "PermanentRole",
+        "RoleName":  "Privileged Authentication Administrator",
+        "Reason":  "Permanent"
+    }
+]
