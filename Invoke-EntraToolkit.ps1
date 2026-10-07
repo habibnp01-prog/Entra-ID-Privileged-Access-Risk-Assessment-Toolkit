@@ -13,16 +13,17 @@
         confirmation ("yes") unless -NonInteractive + -Force are set.
 
     ACTIONS:
-      Status      - Show toolkit state (no work)                          [local]
-      Discover    - Assessment (PIM + permanent + scoring)                [Graph READ]
-      Plan        - Markdown remediation plan                             [local]
-      Scenarios   - Auto-generate scenarios from risk report              [local]
-      WhatIf      - Simulate a scenario                                   [local]
-      Remediate   - Apply a scenario (preview + confirmation required)    [Graph RW]
-      Revalidate  - Diff baseline vs current                              [local]
-      Audit       - Export CSV + HTML bundle                              [local]
-      Dashboard   - Self-contained interactive HTML dashboard             [local]
-      Full        - Discover + Plan + Scenarios + Dashboard + Audit       [Graph READ]
+      Status       - Show toolkit state (no work)                          [local]
+      Discover     - Assessment (PIM + permanent + scoring)                [Graph READ]
+      Plan         - Markdown remediation plan                             [local]
+      Scenarios    - Auto-generate scenarios from risk report              [local]
+      WhatIf       - Simulate a scenario                                   [local]
+      Remediate    - Apply a scenario (preview + confirmation required)    [Graph RW]
+      Revalidate   - Diff baseline vs current                              [local]
+      Audit        - Export CSV + HTML bundle                              [local]
+      Dashboard    - Self-contained interactive HTML dashboard             [local]
+      Snapshot     - Save a timestamped score snapshot for trend history   [local]
+      Full         - Discover + Plan + Scenarios + Snapshot + Dashboard + Audit [Graph READ]
 
 .PARAMETER Action
     One of the actions listed above.
@@ -58,6 +59,7 @@
     .\Invoke-EntraToolkit.ps1 -Action Status
     .\Invoke-EntraToolkit.ps1 -Action Discover
     .\Invoke-EntraToolkit.ps1 -Action Dashboard
+    .\Invoke-EntraToolkit.ps1 -Action Snapshot
     .\Invoke-EntraToolkit.ps1 -Action Full -MinTier Medium
     .\Invoke-EntraToolkit.ps1 -Action Remediate -ScenarioPath <file> -Apply
 #>
@@ -65,7 +67,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Dashboard","Full")]
+    [ValidateSet("Status","Discover","Plan","Scenarios","WhatIf","Remediate","Revalidate","Audit","Dashboard","Snapshot","Full")]
     [string]$Action,
 
     [string]$OutputFolder   = "",
@@ -100,6 +102,7 @@ $S_remediate  = Join-Path $repoRoot "scripts\Remediation\Invoke-EntraRemediation
 $S_reval      = Join-Path $repoRoot "scripts\Remediation\Compare-EntraRemediationOutcome.ps1"
 $S_audit      = Join-Path $repoRoot "scripts\Remediation\Export-EntraAuditBundle.ps1"
 $S_dashboard  = Join-Path $repoRoot "scripts\Remediation\New-EntraDashboard.ps1"
+$S_snapshot   = Join-Path $repoRoot "scripts\Remediation\Save-EntraScoreSnapshot.ps1"
 
 $F_score     = Join-Path $OutputFolder "RiskScoreReport.json"
 $F_scoreBase = Join-Path $OutputFolder "RiskScoreReport.baseline.json"
@@ -336,6 +339,12 @@ function Invoke-ActionStatus {
     $scenarios = @(Get-ChildItem $ScenarioFolder -Filter "*.json" -ErrorAction SilentlyContinue)
     Write-Host "  Scenarios : $($scenarios.Count) in $ScenarioFolder" -ForegroundColor Cyan
 
+    $historyFolder = Join-Path $OutputFolder "history"
+    if (Test-Path $historyFolder) {
+        $snapshots = @(Get-ChildItem $historyFolder -Filter "score-*.json" -ErrorAction SilentlyContinue)
+        Write-Host "  Snapshots : $($snapshots.Count) in $historyFolder" -ForegroundColor Cyan
+    }
+
     if (Test-Path $F_score) {
         $scored = Get-Content $F_score -Raw | ConvertFrom-Json
         if ($scored -isnot [array]) { $scored = @($scored) }
@@ -502,11 +511,23 @@ function Invoke-ActionDashboard {
     & $S_dashboard -OutputFolder $OutputFolder -ScenarioFolder $ScenarioFolder
 }
 
+function Invoke-ActionSnapshot {
+    Assert-Script $S_snapshot
+    if (-not (Test-Path $F_score)) {
+        Write-Fix "Risk score report missing at $F_score." @(
+            "Run: .\Invoke-EntraToolkit.ps1 -Action Discover"
+        )
+        throw "Cannot snapshot without a score report."
+    }
+    & $S_snapshot -OutputFolder $OutputFolder
+}
+
 function Invoke-ActionFull {
     Write-Header "FULL READ-ONLY PIPELINE"
     Invoke-ActionDiscover
     Invoke-ActionPlan
     Invoke-ActionScenarios
+    Invoke-ActionSnapshot
     Invoke-ActionDashboard
     Invoke-ActionAudit
     Write-Host ""
@@ -534,6 +555,7 @@ try {
         "Revalidate" { Invoke-ActionRevalidate }
         "Audit"      { Invoke-ActionAudit }
         "Dashboard"  { Invoke-ActionDashboard }
+        "Snapshot"   { Invoke-ActionSnapshot }
         "Full"       { Invoke-ActionFull }
     }
 } catch {
